@@ -104,6 +104,58 @@ function activateApp(name) {
   return osa(`tell application "${safe}" to activate`);
 }
 
+// ---- Chrome control (via Chrome's AppleScript dictionary) -----------------
+// Does what raw keystrokes can't: open a URL in a new tab, navigate the active
+// tab, or reload it. Defaults to Google Chrome; pass another Chromium browser
+// name (Brave/Edge/…) to drive it instead.
+function chromeAction(cmd, url, appName) {
+  const app = String(appName || "Google Chrome").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const u = String(url || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  switch (String(cmd)) {
+    case "open":
+      return osa(
+        `tell application "${app}"\n` +
+        `  activate\n` +
+        `  if (count of windows) = 0 then make new window\n` +
+        `  tell front window to make new tab with properties {URL:"${u}"}\n` +
+        `end tell`
+      );
+    case "goto":
+      return osa(
+        `tell application "${app}"\n` +
+        `  activate\n` +
+        `  if (count of windows) = 0 then make new window\n` +
+        `  set URL of active tab of front window to "${u}"\n` +
+        `end tell`
+      );
+    case "reload":
+      return osa(`tell application "${app}"\n  activate\n  reload active tab of front window\nend tell`);
+    default:
+      return activateApp(app);
+  }
+}
+
+// ---- Apple Music control (via the Music AppleScript dictionary) -----------
+// Background playback control — no focus or keystrokes needed.
+function musicAction(cmd) {
+  switch (String(cmd)) {
+    case "playpause": return osa(`tell application "Music" to playpause`);
+    case "next":      return osa(`tell application "Music" to next track`);
+    case "previous":  return osa(`tell application "Music" to previous track`);
+    case "volup":     return osa(`tell application "Music" to set sound volume to (sound volume + 10)`);
+    case "voldown":   return osa(`tell application "Music" to set sound volume to (sound volume - 10)`);
+    case "shuffle":   return osa(`tell application "Music" to set shuffle enabled to not (shuffle enabled)`);
+    case "love":
+      return osa(
+        `tell application "Music"\n` +
+        `  try\n    set favorited of current track to true\n` +
+        `  on error\n    try\n      set loved of current track to true\n    end try\n  end try\n` +
+        `end tell`
+      );
+    default: return activateApp("Music");
+  }
+}
+
 // ---- Target discovery & routing ------------------------------------------
 
 // Names of foreground (non-background) apps currently running.
@@ -368,22 +420,77 @@ wss.on("listening", () => {
 process.on("SIGINT", () => { stopAdvertise(); stopHaptics(); process.exit(0); });
 process.on("SIGTERM", () => { stopAdvertise(); stopHaptics(); process.exit(0); });
 
+// ---- Message validation (defence-in-depth over the AppleScript escaping) ---
+// Untrusted LAN input: whitelist actions, enforce types, and bound sizes so a
+// malformed or hostile message can't reach osascript or exhaust resources.
+const ACTIONS = new Set(["text", "key", "raise", "scan", "speak", "read", "chrome", "music", "app"]);
+const MAX_TEXT = 4000;
+
+function validTarget(t) {
+  if (t == null) return true; // optional
+  if (typeof t !== "object" || Array.isArray(t)) return false;
+  if (typeof t.app !== "string" || !t.app.length || t.app.length > 100) return false;
+  if (t.windowId != null && !Number.isSafeInteger(t.windowId)) return false;
+  return true;
+}
+function validStr(v, max) { return typeof v === "string" && v.length <= max; }
+
+// Returns null when valid, else a short reason string.
+function validateMessage(msg) {
+  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return "not an object";
+  if (!ACTIONS.has(msg.action)) return "unknown action";
+  if ("target" in msg && !validTarget(msg.target)) return "bad target";
+  switch (msg.action) {
+    case "text":
+    case "speak":
+      if (msg.text != null && !validStr(msg.text, MAX_TEXT)) return "bad text";
+      break;
+    case "key":
+      if (!validStr(msg.key, 20)) return "bad key";
+      if (msg.mods != null &&
+          (!Array.isArray(msg.mods) || msg.mods.length > 4 || !msg.mods.every((m) => validStr(m, 20))))
+        return "bad mods";
+      break;
+    case "chrome":
+      if (!validStr(msg.cmd, 20)) return "bad cmd";
+      if (msg.url != null && !validStr(msg.url, 2000)) return "bad url";
+      if (msg.app != null && !validStr(msg.app, 100)) return "bad app";
+      break;
+    case "music":
+      if (!validStr(msg.cmd, 20)) return "bad cmd";
+      break;
+    case "app":
+      if (!validStr(msg.app, 100)) return "bad app";
+      break;
+  }
+  return null;
+}
+
 wss.on("connection", (ws, req) => {
   let authed = TOKEN === "";
   const connState = { lastRaised: null };
   console.log(`[+] client connected ${req.socket.remoteAddress}`);
 
   ws.on("message", async (raw) => {
+    // Cap raw frame size before parsing (defence against oversized payloads).
+    if (raw.length > 64 * 1024) { console.log("[!] oversized frame dropped"); return; }
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
 
-    if (msg.action === "hello") {
+    if (msg && msg.action === "hello") {
       authed = TOKEN === "" || msg.token === TOKEN;
       ws.send(JSON.stringify({ ok: authed }));
       if (!authed) { console.log("[!] bad token, closing"); ws.close(); }
       return;
     }
     if (!authed) return;
+
+    const invalid = validateMessage(msg);
+    if (invalid) {
+      console.log(`[!] rejected message: ${invalid}`);
+      ws.send(JSON.stringify({ ok: false, error: "invalid message" }));
+      return;
+    }
 
     try {
       switch (msg.action) {
@@ -421,6 +528,19 @@ wss.on("connection", (ws, req) => {
           if (text) await speak(text);
           ws.send(JSON.stringify({ type: "spoke", text }));
           return; // response already sent
+        }
+        case "chrome": {
+          macHaptic();
+          await chromeAction(msg.cmd, msg.url, msg.app);
+          connState.lastRaised = null; // Chrome is now frontmost; force a re-raise next key
+          console.log(`chrome ${msg.cmd}${msg.url ? " " + msg.url : ""}`);
+          break;
+        }
+        case "music": {
+          macHaptic();
+          await musicAction(msg.cmd); // background — doesn't change frontmost app
+          console.log(`music  ${msg.cmd}`);
+          break;
         }
         case "app": { // legacy app switcher
           const app = APP_MAP[msg.app] || msg.app;

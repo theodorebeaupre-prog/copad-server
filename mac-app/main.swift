@@ -1,11 +1,22 @@
 import AppKit
 import Foundation
+import ApplicationServices
+
+// Private libsystem call: with disclaim = 0 the spawned child stays under the
+// PARENT's TCC responsibility. This is why the app's Accessibility grant then
+// covers node's osascript keystrokes. (Chromium & others use the same call.)
+@_silgen_name("responsibility_spawnattrs_setdisclaim")
+private func responsibility_spawnattrs_setdisclaim(
+    _ attr: UnsafeMutablePointer<posix_spawnattr_t?>, _ disclaim: Int32) -> Int32
 
 /// Runs the Co/Pad Node helper (`server.js`) as a child process and surfaces its
-/// state. The .app is the responsible process for TCC, so Accessibility /
-/// Automation are granted to "Co/Pad Server" — no terminal needed.
+/// state. Node is spawned WITHOUT disclaiming responsibility, so the .app stays
+/// the responsible process for TCC — Accessibility / Automation granted to
+/// "Co/Pad Server" cover node's keystrokes. No terminal needed.
 final class HelperController {
-    private var process: Process?
+    private var pid: pid_t = 0
+    private var outPipe: Pipe?
+    private var exitSource: DispatchSourceProcess?
     private(set) var address = ""
     private(set) var running = false
     private(set) var clients = 0
@@ -16,42 +27,77 @@ final class HelperController {
     init(resourceDir: URL) { self.resourceDir = resourceDir }
 
     func start() {
-        guard process == nil else { return }
+        guard pid == 0 else { return }
         guard let node = Self.findNode() else {
             note = "Node not found — install Node 18+"; running = false; emit(); return
         }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: node)
-        p.arguments = [resourceDir.appendingPathComponent("server.js").path]
-        p.currentDirectoryURL = resourceDir
+        let serverJs = resourceDir.appendingPathComponent("server.js").path
 
         let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = pipe
+        let writeFD = pipe.fileHandleForWriting.fileDescriptor
+
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_adddup2(&fileActions, writeFD, 1)   // stdout
+        posix_spawn_file_actions_adddup2(&fileActions, writeFD, 2)   // stderr
+        posix_spawn_file_actions_addchdir_np(&fileActions, resourceDir.path)
+
+        var attr: posix_spawnattr_t?
+        posix_spawnattr_init(&attr)
+        _ = responsibility_spawnattrs_setdisclaim(&attr, 0)  // keep the app responsible
+
+        let argv: [String] = [node, serverJs]
+        let cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
+
+        var newPid: pid_t = 0
+        let rc = posix_spawn(&newPid, node, &fileActions, &attr, cArgs, environ)
+
+        posix_spawn_file_actions_destroy(&fileActions)
+        posix_spawnattr_destroy(&attr)
+        cArgs.forEach { free($0) }
+
+        guard rc == 0 else {
+            note = "Failed to launch node (posix_spawn \(rc))"; running = false; emit(); return
+        }
+        pid = newPid
+        outPipe = pipe
+        running = true; note = ""
+
+        try? pipe.fileHandleForWriting.close()  // parent's copy — let EOF work
         pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             let data = h.availableData
             guard !data.isEmpty, let s = String(data: data, encoding: .utf8) else { return }
             self?.parse(s)
         }
-        p.terminationHandler = { [weak self] _ in
-            // Clear the readability handler so the file handle and its retained
-            // closure are released; otherwise it leaks across restarts.
-            pipe.fileHandleForReading.readabilityHandler = nil
-            DispatchQueue.main.async {
-                self?.running = false; self?.process = nil; self?.clients = 0; self?.emit()
-            }
+
+        let src = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        src.setEventHandler { [weak self] in
+            guard let self, self.pid != 0 else { return }
+            let dead = self.pid
+            self.teardown()
+            var s: Int32 = 0; waitpid(dead, &s, WNOHANG)  // reap
         }
-        do {
-            try p.run()
-            process = p; running = true; note = ""; emit()
-        } catch {
-            note = "Failed to launch: \(error.localizedDescription)"; running = false; emit()
-        }
+        exitSource = src
+        src.resume()
+        emit()
+    }
+
+    /// Release handlers/source and reset state (does not kill).
+    private func teardown() {
+        exitSource?.cancel(); exitSource = nil
+        outPipe?.fileHandleForReading.readabilityHandler = nil
+        outPipe = nil
+        pid = 0; running = false; clients = 0
+        emit()
     }
 
     func stop() {
-        process?.terminate(); process = nil
-        running = false; clients = 0; emit()
+        let dead = pid
+        teardown()
+        if dead != 0 {
+            kill(dead, SIGTERM)
+            DispatchQueue.global().async { var s: Int32 = 0; waitpid(dead, &s, 0) }  // reap
+        }
     }
 
     func restart() {
@@ -125,8 +171,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let helper = HelperController(resourceDir: Bundle.main.resourceURL
         ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+    private var axTrusted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Canonical Accessibility request: the app asks the system, which adds it
+        // to the list correctly bound to this process's code identity and prompts
+        // on first run if not yet granted.
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        axTrusted = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+        // Re-check so the menu reflects a grant (or revocation) made while running.
+        Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = AXIsProcessTrusted()
+            if now != self.axTrusted { self.axTrusted = now; self.rebuildMenu() }
+        }
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "slash.circle.fill",
                                    accessibilityDescription: "Co/Pad Server")
@@ -151,6 +209,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let status = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+
+        // Clear, actionable warning when Accessibility isn't granted — without it
+        // keystroke macros / the dial silently do nothing (Chrome/Music still work).
+        if !axTrusted {
+            menu.addItem(.separator())
+            let warn = NSMenuItem(title: "⚠︎ Accessibility off — keys won't type",
+                                  action: #selector(openAccessibility), keyEquivalent: "")
+            warn.target = self
+            warn.toolTip = "Grant Accessibility to Co/Pad Server so it can send keystrokes."
+            menu.addItem(warn)
+        }
 
         if helper.running && !helper.address.isEmpty {
             let addr = NSMenuItem(title: helper.address, action: #selector(copyAddress), keyEquivalent: "")

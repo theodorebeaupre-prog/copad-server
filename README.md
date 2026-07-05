@@ -1,17 +1,18 @@
 # Co/Pad Server
 
-Turn an iPad into a physical control surface for Claude Code. Tap a key on the
-iPad and it types straight into Claude Code (or any app) on your Mac — like a
-Stream Deck, built for vibecoding.
+Turn an iPad into a physical control surface for your Mac — Claude Code, Codex,
+Chrome, Mail, Apple Music, Lightroom, or any app. Tap a key on the iPad and it
+acts on your Mac — like a Stream Deck, built for people who live in the keyboard.
 
 ```
-iPad ──ws──▶ Co/Pad Server ──▶ Terminal · Claude Code · Chrome · anything
+iPad ──ws──▶ Co/Pad Server ──▶ Terminal · Codex · Chrome · Music · anything
 ```
 
 This is the **macOS server**: a menu‑bar app (`mac-app/`) that runs a local
-WebSocket helper (`mac-helper/`) and replays the iPad's key events as real Mac
-keystrokes, with multi‑instance targeting, keyboard shortcuts, trackpad haptics
-and Kokoro voice‑out.
+WebSocket helper (`mac-helper/`) and turns the iPad's events into real Mac input:
+multi‑instance targeting, keyboard shortcuts, **Chrome** (open URL / reload) and
+**Apple Music** actions, trackpad haptics, and Kokoro voice‑out. Every incoming
+message is validated and injection‑safe.
 
 ## Download
 
@@ -49,6 +50,16 @@ Put your iPad on the same Wi‑Fi, tap the helper in the app, and go.
 Env toggles: `COPAD_PORT`, `COPAD_TOKEN`, `COPAD_HAPTICS=0`, `COPAD_PYTHON`,
 `KOKORO_LANG`/`KOKORO_VOICE`. See [`mac-helper/README.md`](mac-helper/README.md)
 for the protocol and Kokoro setup.
+
+> **macOS 15/26:** the Accessibility grant only persists if the app is signed
+> with a **trusted Apple identity**. `build.sh` picks your Apple Development /
+> Developer ID cert automatically — see [`mac-app/README.md`](mac-app/README.md#keep-accessibility-across-rebuilds-stable-signing).
+
+## Tests
+
+```bash
+cd mac-helper && npm install && npm test   # WebSocket parser, validation, token auth
+```
 
 ## License
 

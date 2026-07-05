@@ -100,6 +100,7 @@ Newline-free JSON messages over WebSocket:
 | `{"action":"raise","target":{…}}` | Brings a target to the front (no typing) |
 | `{"action":"speak","text":"…"}` | Speaks text aloud via Kokoro (if installed) |
 | `{"action":"read","target":{…}}` | Scrapes the target's reply and speaks it; replies `{"type":"spoke","text":…}` |
+| `{"action":"chrome","cmd":"open\|goto\|reload","url":"https://…","app":"Google Chrome"}` | Drives Chrome: open a URL in a new tab, navigate the active tab, or reload (`app` optional — any Chromium browser) |
 | `{"action":"app","app":"WARP"}` | Legacy: brings a named Mac app to the front |
 
 A `target` is `{"app":"Terminal","windowId":1234,"label":"…"}` (window-level, from
