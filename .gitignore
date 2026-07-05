@@ -1,0 +1,12 @@
+# dependencies
+node_modules/
+
+# build artifacts
+mac-app/build/
+*.app
+
+# macOS
+.DS_Store
+
+# logs / temp
+*.log

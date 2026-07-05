@@ -1,0 +1,13 @@
+{
+  "name": "copad-helper",
+  "version": "1.0.0",
+  "description": "Local WebSocket helper that turns Co/Pad iPad key events into real Mac keystrokes.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,221 @@
+import AppKit
+import Foundation
+
+/// Runs the Co/Pad Node helper (`server.js`) as a child process and surfaces its
+/// state. The .app is the responsible process for TCC, so Accessibility /
+/// Automation are granted to "Co/Pad Server" — no terminal needed.
+final class HelperController {
+    private var process: Process?
+    private(set) var address = ""
+    private(set) var running = false
+    private(set) var clients = 0
+    private(set) var note = ""
+    var onChange: (() -> Void)?
+
+    private let resourceDir: URL
+    init(resourceDir: URL) { self.resourceDir = resourceDir }
+
+    func start() {
+        guard process == nil else { return }
+        guard let node = Self.findNode() else {
+            note = "Node not found — install Node 18+"; running = false; emit(); return
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: node)
+        p.arguments = [resourceDir.appendingPathComponent("server.js").path]
+        p.currentDirectoryURL = resourceDir
+
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let data = h.availableData
+            guard !data.isEmpty, let s = String(data: data, encoding: .utf8) else { return }
+            self?.parse(s)
+        }
+        p.terminationHandler = { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.running = false; self?.process = nil; self?.clients = 0; self?.emit()
+            }
+        }
+        do {
+            try p.run()
+            process = p; running = true; note = ""; emit()
+        } catch {
+            note = "Failed to launch: \(error.localizedDescription)"; running = false; emit()
+        }
+    }
+
+    func stop() {
+        process?.terminate(); process = nil
+        running = false; clients = 0; emit()
+    }
+
+    func restart() {
+        stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.start() }
+    }
+
+    private func parse(_ s: String) {
+        var changed = false
+        if let r = s.range(of: #"ws://[0-9.]+:[0-9]+"#, options: .regularExpression) {
+            address = String(s[r]); changed = true
+        }
+        for line in s.split(separator: "\n") {
+            if line.contains("client connected") { clients += 1; changed = true }
+            else if line.contains("client disconnected") { clients = max(0, clients - 1); changed = true }
+        }
+        if changed { DispatchQueue.main.async { self.emit() } }
+    }
+
+    private func emit() { onChange?() }
+
+    /// Locate the `node` binary — common install paths, nvm, then a login shell
+    /// (covers Homebrew, /usr/local, and nvm-managed installs).
+    static func findNode() -> String? {
+        let fm = FileManager.default
+
+        for p in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
+            if fm.isExecutableFile(atPath: p) { return p }
+        }
+
+        // nvm: ~/.nvm/versions/node/<version>/bin/node — pick the newest.
+        let nvm = fm.homeDirectoryForCurrentUser.appendingPathComponent(".nvm/versions/node")
+        if let versions = try? fm.contentsOfDirectory(at: nvm, includingPropertiesForKeys: nil) {
+            let candidates = versions
+                .map { $0.appendingPathComponent("bin/node").path }
+                .filter { fm.isExecutableFile(atPath: $0) }
+                .sorted { $0.compare($1, options: .numeric) == .orderedAscending }
+            if let newest = candidates.last { return newest }
+        }
+
+        // Login shell PATH (zsh first — the macOS default — then bash).
+        for shell in ["/bin/zsh", "/bin/bash"] {
+            let t = Process()
+            t.executableURL = URL(fileURLWithPath: shell)
+            t.arguments = ["-lc", "command -v node"]
+            let pipe = Pipe(); t.standardOutput = pipe
+            do { try t.run() } catch { continue }
+            t.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let out, !out.isEmpty, fm.isExecutableFile(atPath: out) { return out }
+        }
+        return nil
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let helper = HelperController(resourceDir: Bundle.main.resourceURL
+        ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "slash.circle.fill",
+                                   accessibilityDescription: "Co/Pad Server")
+            button.image?.isTemplate = true
+        }
+        helper.onChange = { [weak self] in self?.rebuildMenu() }
+        rebuildMenu()
+        helper.start()
+    }
+
+    private func rebuildMenu() {
+        let menu = NSMenu()
+
+        let header = NSMenuItem(title: "Co/Pad Server", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+
+        let statusText: String
+        if !helper.note.isEmpty { statusText = "⚠︎ \(helper.note)" }
+        else if helper.running { statusText = "● Running — \(helper.clients) connected" }
+        else { statusText = "○ Stopped" }
+        let status = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
+
+        if helper.running && !helper.address.isEmpty {
+            let addr = NSMenuItem(title: helper.address, action: #selector(copyAddress), keyEquivalent: "")
+            addr.target = self
+            addr.toolTip = "Click to copy"
+            menu.addItem(addr)
+        }
+
+        menu.addItem(.separator())
+        let run = NSMenuItem(title: helper.running ? "Restart Helper" : "Start Helper",
+                             action: #selector(toggleRun), keyEquivalent: "r")
+        run.target = self
+        menu.addItem(run)
+
+        let acc = NSMenuItem(title: "Open Accessibility Settings…",
+                             action: #selector(openAccessibility), keyEquivalent: "")
+        acc.target = self
+        menu.addItem(acc)
+
+        let auto = NSMenuItem(title: "Open Automation Settings…",
+                              action: #selector(openAutomation), keyEquivalent: "")
+        auto.target = self
+        menu.addItem(auto)
+
+        menu.addItem(.separator())
+        let about = NSMenuItem(title: "About Co/Pad Server", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+
+        let quit = NSMenuItem(title: "Quit Co/Pad Server", action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+
+        statusItem.menu = menu
+        statusItem.button?.toolTip = helper.running ? (helper.address.isEmpty ? "Co/Pad Server" : helper.address)
+                                                     : "Co/Pad Server — stopped"
+    }
+
+    @objc private func toggleRun() { helper.running ? helper.restart() : helper.start() }
+
+    @objc private func copyAddress() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(helper.address, forType: .string)
+    }
+
+    @objc private func openAccessibility() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    @objc private func openAutomation() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")!)
+    }
+
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        let credits = NSAttributedString(
+            string: "The Mac server for Co/Pad — your iPad macro pad for Claude Code.\n\n"
+                  + "Runs the helper that turns iPad key taps into real Mac keystrokes: "
+                  + "multi-instance targeting, keyboard shortcuts, trackpad haptics, "
+                  + "voice dictation and Kokoro read-back.\n\n"
+                  + "iPad + Mac on the same Wi-Fi. Menu-bar only — grant Accessibility to type.",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "Co/Pad Server",
+            .applicationVersion: "1.0",
+            .version: "1",
+            .credits: credits,
+            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Co/Pad",
+        ])
+    }
+
+    @objc private func quit() { helper.stop(); NSApp.terminate(nil) }
+
+    func applicationWillTerminate(_ notification: Notification) { helper.stop() }
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.accessory) // menu-bar only, no Dock icon
+app.run()
