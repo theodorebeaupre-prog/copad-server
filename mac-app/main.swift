@@ -34,6 +34,9 @@ final class HelperController {
             self?.parse(s)
         }
         p.terminationHandler = { [weak self] _ in
+            // Clear the readability handler so the file handle and its retained
+            // closure are released; otherwise it leaks across restarts.
+            pipe.fileHandleForReading.readabilityHandler = nil
             DispatchQueue.main.async {
                 self?.running = false; self?.process = nil; self?.clients = 0; self?.emit()
             }
@@ -57,15 +60,24 @@ final class HelperController {
     }
 
     private func parse(_ s: String) {
-        var changed = false
+        // Runs on the pipe's background queue. All state mutation and emit()
+        // must happen on the main thread — rebuildMenu() reads this state there.
+        var newAddress: String?
+        var delta = 0
         if let r = s.range(of: #"ws://[0-9.]+:[0-9]+"#, options: .regularExpression) {
-            address = String(s[r]); changed = true
+            newAddress = String(s[r])
         }
         for line in s.split(separator: "\n") {
-            if line.contains("client connected") { clients += 1; changed = true }
-            else if line.contains("client disconnected") { clients = max(0, clients - 1); changed = true }
+            if line.contains("client connected") { delta += 1 }
+            else if line.contains("client disconnected") { delta -= 1 }
         }
-        if changed { DispatchQueue.main.async { self.emit() } }
+        guard newAddress != nil || delta != 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let newAddress { self.address = newAddress }
+            if delta != 0 { self.clients = max(0, self.clients + delta) }
+            self.emit()
+        }
     }
 
     private func emit() { onChange?() }
@@ -83,10 +95,14 @@ final class HelperController {
         let nvm = fm.homeDirectoryForCurrentUser.appendingPathComponent(".nvm/versions/node")
         if let versions = try? fm.contentsOfDirectory(at: nvm, includingPropertiesForKeys: nil) {
             let candidates = versions
-                .map { $0.appendingPathComponent("bin/node").path }
-                .filter { fm.isExecutableFile(atPath: $0) }
-                .sorted { $0.compare($1, options: .numeric) == .orderedAscending }
-            if let newest = candidates.last { return newest }
+                .filter { fm.isExecutableFile(atPath: $0.appendingPathComponent("bin/node").path) }
+                // Sort by the version directory name (e.g. "v20.11.0"), not the
+                // full binary path — a numeric compare over the whole path
+                // misorders versions.
+                .sorted { $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedAscending }
+            if let newest = candidates.last {
+                return newest.appendingPathComponent("bin/node").path
+            }
         }
 
         // Login shell PATH (zsh first — the macOS default — then bash).

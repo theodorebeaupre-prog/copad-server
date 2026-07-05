@@ -62,7 +62,10 @@ function osa(script, timeout = 4000) {
 }
 
 function typeText(text) {
-  const escaped = String(text).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const escaped = String(text)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/[\r\n]/g, " ");
   return osa(`tell application "System Events" to keystroke "${escaped}"`);
 }
 
@@ -97,7 +100,7 @@ function sendKey(name, mods) {
 }
 
 function activateApp(name) {
-  const safe = String(name).replace(/"/g, '\\"');
+  const safe = String(name).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return osa(`tell application "${safe}" to activate`);
 }
 
@@ -180,27 +183,36 @@ async function scanTargets() {
   return targets;
 }
 
+// Coerce a client-supplied window id to a safe AppleScript integer literal.
+// Returns null for anything that isn't a real integer id — this blocks script
+// injection and avoids `| 0` truncating large (>2^31) terminal window ids.
+function widLiteral(wid) {
+  const n = Number(wid);
+  return Number.isSafeInteger(n) ? String(n) : null;
+}
+
 // Bring a specific target to the front before typing. `st.lastRaised` avoids
 // re-activating the same target on every keystroke (keeps arrows / the dial snappy).
 async function raiseTarget(target, st) {
   if (!target || !target.app) return;
   const app = String(target.app);
   const wid = target.windowId;
+  const widLit = wid != null ? widLiteral(wid) : null;
   const key = wid != null ? `${app}#${wid}` : app;
   if (st && st.lastRaised === key) return;
   try {
-    if (wid != null && app === "Terminal") {
+    if (widLit != null && app === "Terminal") {
       await osa(
         `tell application "Terminal"\n` +
         `  activate\n` +
-        `  try\n    set index of (first window whose id is ${wid | 0}) to 1\n  end try\n` +
+        `  try\n    set index of (first window whose id is ${widLit}) to 1\n  end try\n` +
         `end tell`
       );
-    } else if (wid != null && (app === "iTerm2" || app === "iTerm")) {
+    } else if (widLit != null && (app === "iTerm2" || app === "iTerm")) {
       await osa(
         `tell application "iTerm2"\n` +
         `  activate\n` +
-        `  try\n    select (first window whose id is ${wid | 0})\n  end try\n` +
+        `  try\n    select (first window whose id is ${widLit})\n  end try\n` +
         `end tell`
       );
     } else {
@@ -236,8 +248,11 @@ function speak(text) {
       else if (code) console.error("speak: exited", code, err.trim());
       resolve();
     });
-    p.stdin.write(t);
-    p.stdin.end();
+    p.stdin.on("error", () => {}); // ignore EPIPE if python vanished
+    try {
+      p.stdin.write(t);
+      p.stdin.end();
+    } catch { /* stdin already broken — close handler will resolve */ }
   });
 }
 
@@ -248,16 +263,17 @@ async function readReply(target) {
   if (!target) return "";
   const app = String(target.app || "");
   const wid = target.windowId;
+  const widLit = wid != null ? widLiteral(wid) : null;
   try {
-    if (app === "Terminal" && wid != null) {
+    if (app === "Terminal" && widLit != null) {
       const raw = await osa(
-        `tell application "Terminal" to get contents of selected tab of (first window whose id is ${wid | 0})`
+        `tell application "Terminal" to get contents of selected tab of (first window whose id is ${widLit})`
       );
       return lastReply(raw);
     }
-    if ((app === "iTerm2" || app === "iTerm") && wid != null) {
+    if ((app === "iTerm2" || app === "iTerm") && widLit != null) {
       const raw = await osa(
-        `tell application "iTerm2" to tell (first window whose id is ${wid | 0}) to tell current session to get text`
+        `tell application "iTerm2" to tell (first window whose id is ${widLit}) to tell current session to get text`
       );
       return lastReply(raw);
     }
@@ -304,6 +320,7 @@ function macHaptic() {
       });
       hapticProc.on("error", () => { hapticDead = true; hapticProc = null; });
       hapticProc.on("close", () => { hapticProc = null; });
+      hapticProc.stdin.on("error", () => { hapticProc = null; }); // broken pipe if JXA died
     }
     hapticProc.stdin.write("\n");
   } catch {

@@ -52,14 +52,16 @@ def main() -> int:
     try:
         pipeline = KPipeline(lang_code=lang)
         chunks = [to_numpy(audio) for _, _, audio in pipeline(text, voice=voice)]
-        chunks = [c for c in chunks if c is not None and len(c)]
+        chunks = [c for c in chunks if c is not None and len(c) > 0]
         if not chunks:
             return 0
         audio = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+        if audio is None or len(audio) == 0:
+            return 0
 
         path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
-        sf.write(path, audio, 24000)
         try:
+            sf.write(path, audio, 24000)
             subprocess.run(["afplay", path], check=False)
         finally:
             try:
