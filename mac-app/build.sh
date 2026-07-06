@@ -17,6 +17,8 @@ swiftc -O -o "$BUILD/$APP_SAFE/Contents/MacOS/CoPadServer" main.swift -framework
 
 echo "› bundling"
 cp Info.plist "$BUILD/$APP_SAFE/Contents/Info.plist"
+cp AppIcon.icns "$BUILD/$APP_SAFE/Contents/Resources/" 2>/dev/null || \
+  echo "  (AppIcon.icns missing — run: swift make-icon.swift && iconutil -c icns AppIcon.iconset -o AppIcon.icns)"
 
 # Ensure helper deps are present, then copy the helper into Resources.
 if [ ! -d "$HELPER/node_modules" ]; then

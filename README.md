@@ -14,6 +14,9 @@ multi‑instance targeting, keyboard shortcuts, **Chrome** (open URL / reload) a
 **Apple Music** actions, trackpad haptics, and Kokoro voice‑out. Every incoming
 message is validated and injection‑safe.
 
+> **📱 The Co/Pad iPad app is coming soon to the App Store.** This server is its
+> free companion — install it now and you'll be ready the day the app ships.
+
 ## Download
 
 Grab the app from **[Releases](https://github.com/theodorebeaupre-prog/copad-server/releases/latest)**.
