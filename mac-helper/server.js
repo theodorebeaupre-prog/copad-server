@@ -386,7 +386,16 @@ function localAddresses() {
   const out = [];
   for (const name of Object.keys(nets)) {
     for (const net of nets[name] || []) {
-      if (net.family === "IPv4" && !net.internal) out.push(net.address);
+      if (net.family !== "IPv4" || net.internal) continue;
+      const ip = net.address;
+      // Only advertise addresses the iPad can actually reach: iOS App
+      // Transport Security allows plain ws:// to the LOCAL network only, so
+      // skip link-local (169.254/16) and CGNAT/Tailscale (100.64/10) — showing
+      // them just leads users to a connection iOS will refuse.
+      if (ip.startsWith("169.254.")) continue;
+      const o = ip.split(".").map(Number);
+      if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) continue;
+      out.push(ip);
     }
   }
   return out;
