@@ -78,14 +78,20 @@ is *scraped* from the terminal and is approximate (works best on Terminal.app /
 iTerm2 windows). Dictation (voice **in**) is handled on the iPad and needs none
 of this.
 
-## Optional: require a token
+## Pairing code (token)
+
+The **Co/Pad Server menu-bar app always sets a pairing code** (shown in its
+menu — click to copy) and passes it to the helper as `COPAD_TOKEN`. Enter the
+same code in the iPad app (Settings → Pairing code).
+
+When running the helper **standalone** with `node server.js`, set it yourself:
 
 ```bash
 COPAD_TOKEN=some-secret node server.js
 ```
 
-Then set the same token in the app's settings. Without a token anything on your
-LAN can send keystrokes, so use one on shared networks.
+Without a token anything on your LAN can send keystrokes to your Mac, so always
+use one on networks you don't fully control.
 
 ## Protocol
 

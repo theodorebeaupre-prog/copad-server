@@ -26,6 +26,23 @@ final class HelperController {
     private let resourceDir: URL
     init(resourceDir: URL) { self.resourceDir = resourceDir }
 
+    /// The shared secret the iPad must present. Without it, anyone on the same
+    /// Wi-Fi could inject keystrokes into this Mac — so a code is ALWAYS set:
+    /// COPAD_TOKEN from the environment if provided, else a persistent 6-char
+    /// code generated on first launch (shown in the menu for pairing).
+    let token: String = {
+        if let env = ProcessInfo.processInfo.environment["COPAD_TOKEN"], !env.isEmpty {
+            return env
+        }
+        let d = UserDefaults.standard
+        if let saved = d.string(forKey: "copad.pairing"), !saved.isEmpty { return saved }
+        // No 0/O/1/I/L — the code is read off the menu bar and typed by hand.
+        let alphabet = Array("23456789ABCDEFGHJKMNPQRSTUVWXYZ")
+        let code = String((0..<6).map { _ in alphabet.randomElement()! })
+        d.set(code, forKey: "copad.pairing")
+        return code
+    }()
+
     func start() {
         guard pid == 0 else { return }
         guard let node = Self.findNode() else {
@@ -49,12 +66,19 @@ final class HelperController {
         let argv: [String] = [node, serverJs]
         let cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
 
+        // Inherit the environment but force COPAD_TOKEN so the helper always
+        // requires the pairing code (see `token` above).
+        var env = ProcessInfo.processInfo.environment
+        env["COPAD_TOKEN"] = token
+        let cEnv: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
+
         var newPid: pid_t = 0
-        let rc = posix_spawn(&newPid, node, &fileActions, &attr, cArgs, environ)
+        let rc = posix_spawn(&newPid, node, &fileActions, &attr, cArgs, cEnv)
 
         posix_spawn_file_actions_destroy(&fileActions)
         posix_spawnattr_destroy(&attr)
         cArgs.forEach { free($0) }
+        cEnv.forEach { free($0) }
 
         guard rc == 0 else {
             note = "Failed to launch node (posix_spawn \(rc))"; running = false; emit(); return
@@ -228,6 +252,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(addr)
         }
 
+        // The pairing code the iPad must enter (Settings → Token). Always shown
+        // so pairing never requires the terminal or env vars.
+        let tok = NSMenuItem(title: "Pairing code: \(helper.token)", action: #selector(copyToken), keyEquivalent: "")
+        tok.target = self
+        tok.toolTip = "Enter this code in the Co/Pad app on your iPad (Settings → Token). Click to copy."
+        menu.addItem(tok)
+
         menu.addItem(.separator())
         let run = NSMenuItem(title: helper.running ? "Restart Helper" : "Start Helper",
                              action: #selector(toggleRun), keyEquivalent: "r")
@@ -265,6 +296,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSPasteboard.general.setString(helper.address, forType: .string)
     }
 
+    @objc private func copyToken() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(helper.token, forType: .string)
+    }
+
     @objc private func openAccessibility() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
@@ -285,10 +321,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ])
+        let info = Bundle.main.infoDictionary
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Co/Pad Server",
-            .applicationVersion: "1.0",
-            .version: "1",
+            .applicationVersion: info?["CFBundleShortVersionString"] as? String ?? "—",
+            .version: info?["CFBundleVersion"] as? String ?? "—",
             .credits: credits,
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Co/Pad",
         ])

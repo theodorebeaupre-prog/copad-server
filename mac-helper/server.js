@@ -479,7 +479,9 @@ wss.on("connection", (ws, req) => {
 
     if (msg && msg.action === "hello") {
       authed = TOKEN === "" || msg.token === TOKEN;
-      ws.send(JSON.stringify({ ok: authed }));
+      // "bad token" is matched by the iPad app to show a pairing-code hint
+      // (instead of a generic connection error) and stop auto-reconnecting.
+      ws.send(JSON.stringify(authed ? { ok: true } : { ok: false, error: "bad token" }));
       if (!authed) { console.log("[!] bad token, closing"); ws.close(); }
       return;
     }

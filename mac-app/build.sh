@@ -12,8 +12,18 @@ echo "› cleaning"
 rm -rf "$BUILD"
 mkdir -p "$BUILD/$APP_SAFE/Contents/MacOS" "$BUILD/$APP_SAFE/Contents/Resources"
 
-echo "› compiling"
-swiftc -O -o "$BUILD/$APP_SAFE/Contents/MacOS/CoPadServer" main.swift -framework AppKit
+echo "› compiling (universal)"
+# Build both slices so the app runs natively on Apple Silicon AND Intel.
+# Falls back to a native-only build if cross-compiling isn't available.
+BIN="$BUILD/$APP_SAFE/Contents/MacOS/CoPadServer"
+if swiftc -O -target arm64-apple-macos13  -o "$BUILD/CoPadServer-arm64"  main.swift -framework AppKit 2>/dev/null \
+&& swiftc -O -target x86_64-apple-macos13 -o "$BUILD/CoPadServer-x86_64" main.swift -framework AppKit 2>/dev/null; then
+  lipo -create "$BUILD/CoPadServer-arm64" "$BUILD/CoPadServer-x86_64" -output "$BIN"
+  rm -f "$BUILD/CoPadServer-arm64" "$BUILD/CoPadServer-x86_64"
+else
+  echo "  (universal build unavailable — building native arch only)"
+  swiftc -O -o "$BIN" main.swift -framework AppKit
+fi
 
 echo "› bundling"
 cp Info.plist "$BUILD/$APP_SAFE/Contents/Info.plist"

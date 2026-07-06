@@ -142,6 +142,7 @@ test("token: wrong token is rejected and connection closed", async () => {
   const closed = new Promise((res) => ws.once("close", res));
   const r = await rpc(ws, { action: "hello", token: "wrong" });
   assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, "bad token"); // the iPad app matches this string
   await closed; // server must close the socket on bad token
 });
 

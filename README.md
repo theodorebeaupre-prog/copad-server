@@ -21,8 +21,8 @@ message is validated and injection‑safe.
 
 Grab the app from **[Releases](https://github.com/theodorebeaupre-prog/copad-server/releases/latest)**.
 
-It's ad‑hoc signed, so on first launch macOS blocks it — **right‑click → Open**,
-or clear quarantine:
+It's signed with a development identity (not notarized), so on first launch
+macOS blocks it — **right‑click → Open**, or clear quarantine:
 
 ```bash
 xattr -dr com.apple.quarantine "CoPad Server.app"
@@ -47,8 +47,11 @@ Grant these to **Co/Pad Server** (System Settings → Privacy & Security):
 
 ## Run
 
-The `/` glyph in your menu bar is the server; it shows the `ws://…:8787` address.
-Put your iPad on the same Wi‑Fi, tap the helper in the app, and go.
+The `/` glyph in your menu bar is the server; it shows the `ws://…:8787` address
+and a **pairing code**. Put your iPad on the same Wi‑Fi, tap the helper in the
+app, enter the pairing code (Settings → Pairing code), and go. The code is
+required — it keeps anyone else on the network from sending keystrokes to your
+Mac.
 
 Env toggles: `COPAD_PORT`, `COPAD_TOKEN`, `COPAD_HAPTICS=0`, `COPAD_PYTHON`,
 `KOKORO_LANG`/`KOKORO_VOICE`. See [`mac-helper/README.md`](mac-helper/README.md)
