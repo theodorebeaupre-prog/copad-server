@@ -28,17 +28,17 @@ final class HelperController {
 
     /// The shared secret the iPad must present. Without it, anyone on the same
     /// Wi-Fi could inject keystrokes into this Mac — so a code is ALWAYS set:
-    /// COPAD_TOKEN from the environment if provided, else a persistent 6-char
+    /// COPAD_TOKEN from the environment if provided, else a persistent 8-char
     /// code generated on first launch (shown in the menu for pairing).
     let token: String = {
         if let env = ProcessInfo.processInfo.environment["COPAD_TOKEN"], !env.isEmpty {
             return env
         }
         let d = UserDefaults.standard
-        if let saved = d.string(forKey: "copad.pairing"), !saved.isEmpty { return saved }
+        if let saved = d.string(forKey: "copad.pairing"), saved.count >= 8 { return saved }
         // No 0/O/1/I/L — the code is read off the menu bar and typed by hand.
         let alphabet = Array("23456789ABCDEFGHJKMNPQRSTUVWXYZ")
-        let code = String((0..<6).map { _ in alphabet.randomElement()! })
+        let code = String((0..<8).map { _ in alphabet.randomElement()! })
         d.set(code, forKey: "copad.pairing")
         return code
     }()

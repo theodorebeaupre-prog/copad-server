@@ -26,6 +26,11 @@ const PORT = parseInt(process.env.COPAD_PORT || "8787", 10);
 // always authenticated" state can never occur.
 const TOKEN = process.env.COPAD_TOKEN || crypto.randomBytes(6).toString("base64url");
 const TOKEN_GENERATED = !process.env.COPAD_TOKEN;
+// Handshake brute-force protection: per-connection failure tracking. After
+// MAX_AUTH_FAILURES wrong tokens the connection is silenced for the cooldown.
+const MAX_AUTH_FAILURES = 5;
+const AUTH_COOLDOWN_MS = 30_000;
+const authFailures = new WeakMap();
 const PYTHON = process.env.COPAD_PYTHON || "python3";
 const KOKORO_SCRIPT = path.join(__dirname, "kokoro_speak.py");
 const MAC_HAPTICS = process.env.COPAD_HAPTICS !== "0"; // Force Touch trackpad feedback
