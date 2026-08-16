@@ -51,31 +51,59 @@ function rpc(ws, msg) {
   });
 }
 
-// ---- No-token server -------------------------------------------------------
+// ---- Auto-token server (default: COPAD_TOKEN unset) ------------------------
+// Security regression tests: the server must NEVER run unauthenticated. With
+// no COPAD_TOKEN it generates a random pairing code, so an empty token must
+// always fail the handshake.
 
 const PORT = 8799;
 let server;
 
 before(async () => {
-  server = startServer(PORT);
+  server = startServer(PORT); // no COPAD_TOKEN — must auto-generate one
   await waitForPort(PORT);
 });
 after(() => { if (server) server.kill(); });
 
-async function authed() {
+test("default mode: empty token is rejected (no unauthenticated mode)", async () => {
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
   await open(ws);
+  const closed = new Promise((res) => ws.once("close", res));
   const r = await rpc(ws, { action: "hello", token: "" });
-  assert.strictEqual(r.ok, true, "hello should authenticate with no token");
-  return ws;
-}
+  assert.strictEqual(r.ok, false, "empty token must never authenticate");
+  assert.strictEqual(r.error, "bad token");
+  await closed;
+});
 
-test("hello handshake succeeds with no token", async () => {
-  const ws = await authed();
+test("default mode: actions ignored without any hello", async () => {
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+  await open(ws);
+  let replied = false;
+  ws.on("message", () => { replied = true; });
+  ws.send(JSON.stringify({ action: "scan" }));
+  await new Promise((r) => setTimeout(r, 400));
+  assert.strictEqual(replied, false, "unauthed action must be ignored");
   ws.close();
 });
 
-test("scan replies with a targets list", async () => {
+test("default mode: browser Origin header is rejected at upgrade", async () => {
+  // A malicious web page always sends Origin; native clients never do.
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: "https://evil.example" } });
+  const failed = new Promise((res) => ws.once("error", res));
+  await failed;
+});
+
+async function authed() {
+  // The auto-generated token is not exposed over the wire, so authenticate
+  // against the explicit-token server below for protocol tests.
+  const ws = new WebSocket(`ws://127.0.0.1:${TPORT}`);
+  await open(ws);
+  const r = await rpc(ws, { action: "hello", token: "s3cret" });
+  assert.strictEqual(r.ok, true, "hello should authenticate with the token");
+  return ws;
+}
+
+test("protocol smoke: scan replies with a targets list (token server)", async () => {
   const ws = await authed();
   const r = await rpc(ws, { action: "scan" });
   assert.strictEqual(r.type, "targets");

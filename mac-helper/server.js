@@ -16,11 +16,16 @@
 
 const { WebSocketServer } = require("ws");
 const { execFile, spawn } = require("child_process");
+const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 
 const PORT = parseInt(process.env.COPAD_PORT || "8787", 10);
-const TOKEN = process.env.COPAD_TOKEN || ""; // optional shared secret
+// Never run unauthenticated: when COPAD_TOKEN is unset, generate a random
+// pairing code at startup (printed in the banner) so the "empty token =
+// always authenticated" state can never occur.
+const TOKEN = process.env.COPAD_TOKEN || crypto.randomBytes(6).toString("base64url");
+const TOKEN_GENERATED = !process.env.COPAD_TOKEN;
 const PYTHON = process.env.COPAD_PYTHON || "python3";
 const KOKORO_SCRIPT = path.join(__dirname, "kokoro_speak.py");
 const MAC_HAPTICS = process.env.COPAD_HAPTICS !== "0"; // Force Touch trackpad feedback
@@ -414,13 +419,23 @@ function advertise() {
 }
 function stopAdvertise() { if (bonjour) { bonjour.kill(); bonjour = null; } }
 
-const wss = new WebSocketServer({ port: PORT });
+// Reject browser-originated upgrades. Native clients (iPad app, node) never
+// send an Origin header; a malicious web page always does. Blocking it stops
+// drive-by pages from driving the socket from a browser, even on the LAN.
+const wss = new WebSocketServer({
+  port: PORT,
+  verifyClient: (info, cb) => {
+    if (info.req.headers.origin) { cb(false, 403, "Forbidden"); return; }
+    cb(true);
+  },
+});
 
 wss.on("listening", () => {
   advertise();
   console.log("Co/Pad helper listening on:");
   for (const ip of localAddresses()) console.log(`   ws://${ip}:${PORT}   <-- or just tap "Co/Pad Helper" in the app`);
-  if (TOKEN) console.log("   (token required)");
+  if (TOKEN_GENERATED) console.log(`   pairing code: ${TOKEN}   (required — auto-generated, set COPAD_TOKEN to override)`);
+  else console.log("   (token required)");
   console.log(`   trackpad haptics: ${MAC_HAPTICS ? "on (COPAD_HAPTICS=0 to disable)" : "off"}`);
   console.log("\nGrant Accessibility permission if keystrokes do nothing:");
   console.log("   System Settings > Privacy & Security > Accessibility\n");
@@ -476,7 +491,8 @@ function validateMessage(msg) {
 }
 
 wss.on("connection", (ws, req) => {
-  let authed = TOKEN === "";
+  // No client is trusted before the hello/token handshake.
+  let authed = false;
   const connState = { lastRaised: null };
   console.log(`[+] client connected ${req.socket.remoteAddress}`);
 
@@ -487,7 +503,22 @@ wss.on("connection", (ws, req) => {
     try { msg = JSON.parse(raw.toString()); } catch { return; }
 
     if (msg && msg.action === "hello") {
-      authed = TOKEN === "" || msg.token === TOKEN;
+      // Rate-limit the handshake: online brute force of the pairing code must
+      // not be viable. Track failures per client; after too many, make the
+      // client wait before further attempts are even evaluated.
+      const now = Date.now();
+      const st = authFailures.get(ws) || { count: 0, blockedUntil: 0 };
+      if (now < st.blockedUntil) { ws.close(); return; }
+      const ok = typeof msg.token === "string" && msg.token === TOKEN;
+      if (!ok) {
+        st.count += 1;
+        if (st.count >= MAX_AUTH_FAILURES) {
+          st.blockedUntil = now + AUTH_COOLDOWN_MS;
+          st.count = 0;
+        }
+        authFailures.set(ws, st);
+      }
+      authed = ok;
       // "bad token" is matched by the iPad app to show a pairing-code hint
       // (instead of a generic connection error) and stop auto-reconnecting.
       ws.send(JSON.stringify(authed ? { ok: true } : { ok: false, error: "bad token" }));

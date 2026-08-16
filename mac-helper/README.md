@@ -84,14 +84,18 @@ The **Co/Pad Server menu-bar app always sets a pairing code** (shown in its
 menu — click to copy) and passes it to the helper as `COPAD_TOKEN`. Enter the
 same code in the iPad app (Settings → Pairing code).
 
-When running the helper **standalone** with `node server.js`, set it yourself:
+When running the helper **standalone** with `node server.js`, a random pairing
+code is generated at startup and printed in the console banner — copy it into
+the iPad app (Settings → Pairing code). Set `COPAD_TOKEN` yourself to pin a
+stable code:
 
 ```bash
 COPAD_TOKEN=some-secret node server.js
 ```
 
-Without a token anything on your LAN can send keystrokes to your Mac, so always
-use one on networks you don't fully control.
+Connections from browsers are rejected (the server refuses WebSocket upgrades
+that carry an `Origin` header), so a malicious web page can never drive your
+Mac even on the same network.
 
 ## Protocol
 
